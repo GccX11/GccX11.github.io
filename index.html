@@ -1,1 +1,634 @@
-Hello World!
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Polar Transform (ρ vs. ω)</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        .controls {
+            margin-bottom: 20px;
+        }
+
+        .container {
+            display: flex;
+            gap: 20px;
+        }
+
+        .view {
+            position: relative;
+            width: 300px;
+            height: 300px;
+            border: 1px solid #000;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        button,
+        input[type="range"] {
+            margin: 10px;
+        }
+    </style>
+</head>
+<body>
+<div class="controls">
+    <button id="toggleButton">Switch to log(ρ)</button>
+    <button id="centerButton">Reset to center</button>
+    <button id="shapeButton">Switch to square</button>
+    <button id="finishPolygonButton" style="display:none;">Finish Polygon</button>
+    <label>
+        Shape Size:
+        <input id="sizeSlider" type="range" min="10" max="100" value="50">
+    </label>
+</div>
+<div class="container">
+    <div class="view" id="view1">
+        <canvas id="mainCanvas" width="300" height="300"></canvas>
+    </div>
+    <div class="view" id="view2">
+        <canvas id="polarCanvas" width="300" height="300"></canvas>
+    </div>
+</div>
+<script>
+    const mainCanvas = document.getElementById('mainCanvas');
+    const polarCanvas = document.getElementById('polarCanvas');
+    const mainCtx = mainCanvas.getContext('2d');
+    const polarCtx = polarCanvas.getContext('2d');
+
+    const toggleButton = document.getElementById('toggleButton');
+    const centerButton = document.getElementById('centerButton');
+    const shapeButton = document.getElementById('shapeButton');
+    const finishPolygonButton = document.getElementById('finishPolygonButton');
+    const sizeSlider = document.getElementById('sizeSlider');
+
+    let useLogRho = false;
+    let shapeSize = parseInt(sizeSlider.value, 10);
+    let shapeType = 'circle'; // 'circle', 'square', 'polygon'
+
+    // For circle/square
+    let shapeX = mainCanvas.width / 2;
+    let shapeY = mainCanvas.height / 2;
+
+    // For polygon
+    let polygonPoints = [];  // Array of {x,y}
+    let polygonCompleted = false; // True when polygon is closed and can be moved
+
+    let isDragging = false;
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+
+    // Grid parameters
+    const radialDivs = 5;
+    const angularDivs = 8;
+    const w = mainCanvas.width;
+    const h = mainCanvas.height;
+    const cx = w / 2;
+    const cy = h / 2;
+    const maxRadius = 150;
+    const angleStep = 2 * Math.PI / angularDivs;
+
+    // Mouse events for dragging or polygon creation
+    mainCanvas.addEventListener('mousedown', (e) => {
+        const rect = mainCanvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        if (shapeType === 'polygon') {
+            if (!polygonCompleted) {
+                // Add points to polygon
+                polygonPoints.push({x: mouseX, y: mouseY});
+                drawScene();
+            } else {
+                // Polygon is completed, try dragging
+                if (isInsideShape(mouseX, mouseY)) {
+                    isDragging = true;
+                    // Compute centroid of polygon for reference
+                    const centroid = getPolygonCentroid(polygonPoints);
+                    dragOffsetX = mouseX - centroid.x;
+                    dragOffsetY = mouseY - centroid.y;
+                }
+            }
+        } else {
+            // circle or square
+            if (isInsideShape(mouseX, mouseY)) {
+                isDragging = true;
+                dragOffsetX = mouseX - shapeX;
+                dragOffsetY = mouseY - shapeY;
+            }
+        }
+    });
+
+    mainCanvas.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        const rect = mainCanvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        if (shapeType === 'polygon' && polygonCompleted) {
+            // Move polygon
+            const centroid = getPolygonCentroid(polygonPoints);
+            const dx = (mouseX - dragOffsetX) - centroid.x;
+            const dy = (mouseY - dragOffsetY) - centroid.y;
+            polygonPoints = polygonPoints.map(p => ({x: p.x + dx, y: p.y + dy}));
+        } else if (shapeType !== 'polygon') {
+            // Move circle or square
+            shapeX = mouseX - dragOffsetX;
+            shapeY = mouseY - dragOffsetY;
+
+            // Constrain to canvas bounds for circle/square
+            const half = shapeSize / 2;
+            shapeX = Math.max(half, Math.min(shapeX, mainCanvas.width - half));
+            shapeY = Math.max(half, Math.min(shapeY, mainCanvas.height - half));
+        }
+
+        drawScene();
+    });
+
+    window.addEventListener('mouseup', () => {
+        isDragging = false;
+    });
+
+    toggleButton.addEventListener('click', () => {
+        useLogRho = !useLogRho;
+        toggleButton.textContent = useLogRho ? 'Switch to ρ' : 'Switch to log(ρ)';
+        drawScene();
+    });
+
+    centerButton.addEventListener('click', () => {
+        if (shapeType === 'polygon') {
+            if (polygonCompleted && polygonPoints.length > 0) {
+                const centroid = getPolygonCentroid(polygonPoints);
+                const dx = (mainCanvas.width / 2) - centroid.x;
+                const dy = (mainCanvas.height / 2) - centroid.y;
+                polygonPoints = polygonPoints.map(p => ({x: p.x + dx, y: p.y + dy}));
+            } else {
+                // If polygon not completed, do nothing special
+            }
+        } else {
+            shapeX = mainCanvas.width / 2;
+            shapeY = mainCanvas.height / 2;
+        }
+        drawScene();
+    });
+
+    shapeButton.addEventListener('click', () => {
+        // Cycle through shapes: circle -> square -> polygon -> circle ...
+        if (shapeType === 'circle') {
+            shapeType = 'square';
+            shapeButton.textContent = 'Switch to polygon';
+            finishPolygonButton.style.display = 'none';
+        } else if (shapeType === 'square') {
+            shapeType = 'polygon';
+            shapeButton.textContent = 'Switch to circle';
+            // Reset polygon
+            polygonPoints = [];
+            polygonCompleted = false;
+            finishPolygonButton.style.display = 'inline-block';
+        } else {
+            shapeType = 'circle';
+            shapeButton.textContent = 'Switch to square';
+            finishPolygonButton.style.display = 'none';
+        }
+        drawScene();
+    });
+
+    finishPolygonButton.addEventListener('click', () => {
+        if (shapeType === 'polygon' && polygonPoints.length >= 3 && !polygonCompleted) {
+            polygonCompleted = true;
+            finishPolygonButton.style.display = 'inline-block';
+            drawScene();
+        }
+    });
+
+    sizeSlider.addEventListener('input', () => {
+        shapeSize = parseInt(sizeSlider.value, 10);
+        drawScene();
+    });
+
+    function isInsideShape(mx, my) {
+        if (shapeType === 'circle') {
+            const half = shapeSize / 2;
+            const dx = mx - shapeX;
+            const dy = my - shapeY;
+            return dx * dx + dy * dy <= half * half;
+        } else if (shapeType === 'square') {
+            const half = shapeSize / 2;
+            return (Math.abs(mx - shapeX) <= half && Math.abs(my - shapeY) <= half);
+        } else if (shapeType === 'polygon') {
+            if (!polygonCompleted || polygonPoints.length < 3) {
+                // If polygon not completed or not enough points, return false
+                return false;
+            }
+            return pointInPolygon(mx, my, polygonPoints);
+        }
+    }
+
+    function pointInShape(px, py) {
+        if (shapeType === 'circle') {
+            const half = shapeSize / 2;
+            const dx = px - shapeX;
+            const dy = py - shapeY;
+            return (dx * dx + dy * dy <= half * half);
+        } else if (shapeType === 'square') {
+            const half = shapeSize / 2;
+            return (Math.abs(px - shapeX) <= half && Math.abs(py - shapeY) <= half);
+        } else if (shapeType === 'polygon') {
+            if (!polygonCompleted || polygonPoints.length < 3) {
+                return false;
+            }
+            return pointInPolygon(px, py, polygonPoints);
+        }
+    }
+
+    // Ray-casting algorithm for polygon point inclusion
+    function pointInPolygon(x, y, polygon) {
+        let inside = false;
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+            const xi = polygon[i].x, yi = polygon[i].y;
+            const xj = polygon[j].x, yj = polygon[j].y;
+
+            const intersect = ((yi > y) !== (yj > y)) &&
+                (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
+    }
+
+    function getPolygonCentroid(points) {
+        let xSum = 0, ySum = 0;
+        for (let p of points) {
+            xSum += p.x;
+            ySum += p.y;
+        }
+        return {x: xSum / points.length, y: ySum / points.length};
+    }
+
+    function drawShape(ctx) {
+        ctx.fillStyle = 'red';
+        if (shapeType === 'circle') {
+            const half = shapeSize / 2;
+            ctx.beginPath();
+            ctx.arc(shapeX, shapeY, half, 0, 2 * Math.PI);
+            ctx.fill();
+        } else if (shapeType === 'square') {
+            const half = shapeSize / 2;
+            ctx.fillRect(shapeX - half, shapeY - half, shapeSize, shapeSize);
+        } else if (shapeType === 'polygon') {
+            if (polygonPoints.length > 0) {
+                ctx.beginPath();
+                ctx.moveTo(polygonPoints[0].x, polygonPoints[0].y);
+                for (let i = 1; i < polygonPoints.length; i++) {
+                    ctx.lineTo(polygonPoints[i].x, polygonPoints[i].y);
+                }
+                if (polygonCompleted && polygonPoints.length >= 3) {
+                    ctx.closePath();
+                }
+                ctx.fill();
+                // If not completed, also show the current polygon line
+                if (!polygonCompleted) {
+                    ctx.strokeStyle = 'blue';
+                    ctx.lineWidth = 1;
+                    ctx.stroke();
+                }
+            }
+        }
+    }
+
+    // Return arrays of radial boundaries depending on linear or log scale
+    function getRadialBoundaries() {
+        let radii = [];
+        if (useLogRho) {
+            let minLog = Math.log(1e-6);
+            let maxLog = Math.log(maxRadius);
+            let stepLog = (maxLog - minLog) / radialDivs;
+            for (let i = 1; i <= radialDivs; i++) {
+                let r = Math.exp(minLog + i * stepLog);
+                radii.push(r);
+            }
+        } else {
+            let step = maxRadius / radialDivs;
+            for (let i = 1; i <= radialDivs; i++) {
+                radii.push(i * step);
+            }
+        }
+        return radii;
+    }
+
+    // Draw the wedge cells on the left side based on cell activation
+    function drawLeftCells(ctx, cellActivated) {
+        const radii = getRadialBoundaries();
+        // Add 0 and maxRadius to make intervals
+        let radialIntervals = [0, ...radii];
+        let angularIntervals = [];
+        for (let i = 0; i < angularDivs; i++) {
+            angularIntervals.push(-Math.PI + i * angleStep);
+        }
+        // Add final boundary
+        angularIntervals.push(Math.PI);
+
+        // Draw each cell
+        for (let r = radialDivs - 1; r >= 0; r--) {
+            for (let a = angularDivs - 1; a >= 0; a--) {
+                let active = cellActivated[r][a];
+                ctx.beginPath();
+                ctx.moveTo(cx, cy);
+                ctx.arc(cx, cy, radialIntervals[r + 1], angularIntervals[a], angularIntervals[a + 1]);
+                ctx.lineTo(cx, cy);
+                if (active) {
+                    ctx.fillStyle = 'pink';
+                    ctx.fill();
+                } else {
+                    ctx.fillStyle = 'darkgray';
+                    ctx.fill();
+                }
+            }
+        }
+    }
+
+    function drawMainGrid(ctx) {
+        ctx.save();
+        // Draw after we fill cells, so we get lines on top
+        ctx.strokeStyle = 'gray';
+        ctx.lineWidth = 1;
+
+        // Draw radial lines
+        const radii = getRadialBoundaries();
+        for (let r of radii) {
+            ctx.beginPath();
+            ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+            ctx.stroke();
+        }
+
+        // Draw angular lines
+        for (let i = 0; i < angularDivs; i++) {
+            let angle = -Math.PI + i * angleStep;
+            let x2 = cx + maxRadius * Math.cos(angle);
+            let y2 = cy + maxRadius * Math.sin(angle);
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+        }
+
+        ctx.restore();
+    }
+
+    function drawPolarGrid(ctx, cellActivated, useLogRho, range) {
+        const pw = polarCanvas.width;
+        const ph = polarCanvas.height;
+        ctx.save();
+
+        let radialBoundaries = [];
+        if (useLogRho) {
+            let minLog = Math.log(1e-6);
+            let maxLog = Math.log(maxRadius);
+            let stepLog = (maxLog - minLog) / radialDivs;
+            for (let i = 0; i < radialDivs; i++) {
+                radialBoundaries.push(Math.exp(minLog + (i + 1) * stepLog));
+            }
+        } else {
+            let step = maxRadius / radialDivs;
+            for (let i = 0; i < radialDivs; i++) {
+                radialBoundaries.push((i + 1) * step);
+            }
+        }
+
+        let angularBoundaries = [];
+        for (let i = 0; i < angularDivs; i++) {
+            angularBoundaries.push(-Math.PI + (i + 1) * angleStep);
+        }
+
+        function mapTheta(theta) {
+            return (theta + Math.PI) / (2 * Math.PI) * ph;
+        }
+
+        function mapRho(rho) {
+            if (useLogRho) {
+                return rho / 5.4 * 300;
+            }
+            return rho / 210 * 300;
+        }
+
+        let prevR = 0;
+        for (let r = 0; r < radialDivs; r++) {
+            let currR = radialBoundaries[r];
+            let x1 = mapRho(prevR);
+            let x2 = mapRho(currR);
+            let prevA = -Math.PI;
+            for (let a = 0; a < angularDivs; a++) {
+                let currA = -Math.PI + (a + 1) * angleStep;
+                let y1 = mapTheta(prevA);
+                let y2 = mapTheta(currA);
+                let active = cellActivated[r][a];
+                if (active) {
+                    ctx.fillStyle = 'pink';
+                    ctx.fillRect(x1, y1, (x2 - x1), (y2 - y1));
+                } else {
+                    ctx.fillStyle = 'darkgray';
+                    ctx.fillRect(x1, y1, (x2 - x1), (y2 - y1));
+                }
+
+                ctx.strokeStyle = 'gray';
+                ctx.strokeRect(x1, y1, (x2 - x1), (y2 - y1));
+
+                prevA = currA;
+            }
+            prevR = currR;
+        }
+
+        ctx.restore();
+    }
+
+    function drawPolarView(cellActivated) {
+        polarCtx.clearRect(0, 0, polarCanvas.width, polarCanvas.height);
+
+        const pw = polarCanvas.width;
+        const ph = polarCanvas.height;
+
+        // We'll sample points inside the shape and determine their polar coords
+        let points = [];
+        for (let px = 0; px < w; px++) {
+            for (let py = 0; py < h; py++) {
+                if (pointInShape(px, py)) {
+                    let dx = px - cx;
+                    let dy = py - cy;
+                    let rho = Math.sqrt(dx * dx + dy * dy);
+                    let theta = Math.atan2(dy, dx);
+                    if (useLogRho) {
+                        rho = Math.log(rho + 1e-6);
+                    }
+                    points.push([rho, theta]);
+                }
+            }
+        }
+
+        if (points.length === 0) {
+            // If no points, just draw empty grid
+            let range = {minRho: 0, maxRho: maxRadius, minTheta: -Math.PI, maxTheta: Math.PI};
+            let emptyActivation = Array.from({length: radialDivs}, () => Array(angularDivs).fill(false));
+            drawPolarGrid(polarCtx, emptyActivation, useLogRho, range);
+            return;
+        }
+
+        let rhos = points.map(p => p[0]);
+        let thetas = points.map(p => p[1]);
+
+        let minRho = Math.min(...rhos);
+        let maxRho = Math.max(...rhos);
+        let minTheta = -Math.PI;
+        let maxTheta = Math.PI;
+
+        if (!useLogRho) {
+            // linear mode
+            minRho = 0;
+            maxRho = maxRadius;
+        }
+
+        function mapTheta(theta) {
+            return (theta + Math.PI) / (2 * Math.PI) * ph;
+        }
+
+        function mapRho(rho) {
+            if (minRho === maxRho) return polarCanvas.width / 2;
+            if (useLogRho) {
+                return rho / 5.4 * 300;
+            }
+            return rho / 210 * 300;
+        }
+
+        drawPolarGrid(polarCtx, cellActivated, useLogRho, {
+            minRho, maxRho, minTheta, maxTheta
+        });
+
+        polarCtx.fillStyle = 'red';
+        for (let i = 0; i < points.length; i++) {
+            let [rho, theta] = points[i];
+            let x = mapRho(rho);
+            let y = mapTheta(theta);
+            polarCtx.fillRect(x, y, 1, 1);
+        }
+    }
+
+    function computeCellActivation() {
+        // Determine which cells are covered by the shape
+        let points = [];
+        for (let px = 0; px < w; px++) {
+            for (let py = 0; py < h; py++) {
+                if (pointInShape(px, py)) {
+                    let dx = px - cx;
+                    let dy = py - cy;
+                    let rho = Math.sqrt(dx * dx + dy * dy);
+                    let theta = Math.atan2(dy, dx);
+
+                    let radialBoundaries;
+                    if (useLogRho) {
+                        let minLog = Math.log(1e-6);
+                        let maxLog = Math.log(maxRadius);
+                        let stepLog = (maxLog - minLog) / radialDivs;
+                        radialBoundaries = [];
+                        for (let i = 1; i <= radialDivs; i++) {
+                            radialBoundaries.push(Math.exp(minLog + i * stepLog));
+                        }
+
+                        rho = Math.log(rho + 1e-6);
+                        let logBoundaries = [];
+                        for (let i = 1; i <= radialDivs; i++) {
+                            logBoundaries.push(minLog + i * stepLog);
+                        }
+
+                        var rIndex = 0;
+                        for (let i = 0; i < radialDivs; i++) {
+                            if (rho < logBoundaries[i]) {
+                                rIndex = i;
+                                break;
+                            }
+                            if (i === radialDivs - 1) rIndex = i;
+                        }
+
+                        let aIndex = 0;
+                        for (let j = 0; j < angularDivs; j++) {
+                            if (theta < -Math.PI + (j + 1) * angleStep) {
+                                aIndex = j;
+                                break;
+                            }
+                            if (j === angularDivs - 1) aIndex = j;
+                        }
+                        points.push({rIndex, aIndex});
+                    } else {
+                        let step = maxRadius / radialDivs;
+                        radialBoundaries = [];
+                        for (let i = 1; i <= radialDivs; i++) {
+                            radialBoundaries.push(i * step);
+                        }
+
+                        var rIndex = 0;
+                        for (let i = 0; i < radialDivs; i++) {
+                            if (rho < radialBoundaries[i]) {
+                                rIndex = i;
+                                break;
+                            }
+                            if (i === radialDivs - 1) rIndex = i;
+                        }
+                        let aIndex = 0;
+                        for (let j = 0; j < angularDivs; j++) {
+                            if (theta < -Math.PI + (j + 1) * angleStep) {
+                                aIndex = j;
+                                break;
+                            }
+                            if (j === angularDivs - 1) aIndex = j;
+                        }
+                        points.push({rIndex, aIndex});
+                    }
+                }
+            }
+        }
+
+        // Create a 2D array for cell activation
+        let cellActivated = [];
+        for (let r = 0; r < radialDivs; r++) {
+            cellActivated[r] = [];
+            for (let a = 0; a < angularDivs; a++) {
+                cellActivated[r][a] = false;
+            }
+        }
+
+        for (let p of points) {
+            cellActivated[p.rIndex][p.aIndex] = true;
+        }
+        return cellActivated;
+    }
+
+    function drawScene() {
+        // Compute activation first
+        let cellActivated = computeCellActivation();
+
+        // Left side
+        mainCtx.clearRect(0, 0, w, h);
+        // Draw the wedge cells first
+        drawLeftCells(mainCtx, cellActivated);
+        // Draw grid lines on top
+        drawMainGrid(mainCtx);
+        // Draw shape
+        drawShape(mainCtx);
+
+        // Right side
+        drawPolarView(cellActivated);
+    }
+
+    // Initial render
+    drawScene();
+</script>
+</body>
+</html>
